@@ -1,0 +1,59 @@
+# emacs-for-the-wins
+
+Self-compiled, portable, native-comp GNU Emacs for Windows via MSYS2.
+
+| | |
+|---|---|
+| Shell required | `mingw64.exe` from an MSYS2 install (not `msys2.exe`, not `ucrt64.exe`) |
+| Source | `git.savannah.gnu.org/git/emacs.git`, `emacs-30` branch, depth 1 |
+| Output | `dist/emacs-<branch>-win64/` — runs standalone, no MSYS2 needed on the target machine |
+
+## Install
+
+```sh
+./install.sh
+```
+
+| Flag | Effect |
+|---|---|
+| `--list` | print resolved settings, do nothing |
+| `--skip-deps` | skip `pacman` package install |
+| `--skip-clone` | reuse an existing checkout at `$SRC_DIR` |
+| `--skip-build` | reuse an existing build at `$SRC_DIR/build` |
+| `--only-portable` | just (re)run the portability step |
+| `--branch <name>` | git branch to build (default `emacs-30`) |
+| `--repo <url>` | git remote to clone (default the Savannah mirror above) |
+| `--src-dir <path>` | checkout location (default `build/emacs-src`) |
+| `--prefix <path>` | install location (default `dist/emacs-<branch>-win64`) |
+| `--jobs <n>` | parallel build jobs (default `nproc`) |
+
+Env var overrides: `EMACS_REPO`, `EMACS_BRANCH`, `EMACS_SRC_DIR`, `EMACS_PREFIX`, `EMACS_BUILD_JOBS`.
+
+## What it does
+
+| Step | Action |
+|---|---|
+| 1. Dependencies | `pacman -S` the `mingw-w64-x86_64-*` toolchain + libgccjit + image/xml/gnutls/tree-sitter libs, plus `git`/`autoconf`/`automake`/`texinfo` |
+| 2. Clone | `git clone --branch <branch> --depth 1 <repo>` |
+| 3. Build | `autogen.sh` → `configure --with-native-compilation=aot --with-tree-sitter --with-gnutls --with-xpm` → `make bootstrap` → `make install` |
+| 4. Portable | copies `as.exe`/`ld.exe`/CRT objects/static archives into `lib/gcc`, then closes the DLL dependency graph (`ldd`-driven, iterative) into `bin/` |
+
+## Verify
+
+```sh
+"$PREFIX/bin/emacs.exe" --batch --eval '(princ (native-comp-available-p))'
+```
+
+Should print `t`.
+
+## Run
+
+```sh
+"$PREFIX/bin/runemacs.exe"
+```
+
+Or add `$PREFIX/bin` to `PATH`.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
