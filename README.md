@@ -8,6 +8,15 @@ Self-compiled, portable, native-comp GNU Emacs for Windows via MSYS2.
 | Source | `git.savannah.gnu.org/git/emacs.git`, `emacs-30` branch, depth 1 |
 | Output | `dist/emacs-<branch>-win64/` — runs standalone, no MSYS2 needed on the target machine |
 
+## First-time MSYS2 setup (once per machine)
+
+| Install method | Extra step before `install.sh` |
+|---|---|
+| MSYS2 installer (msys2.org) | none — the installer's first run already does this |
+| `scoop install msys2` | run `msys2.exe` **once** (not `mingw64.exe`) and let it finish; it bootstraps the pacman keyring (`pacman-key --init`/`--populate`) and prints "restart shell to apply necessary actions" — restart the shell, then proceed |
+
+Symptom if skipped: `pacman -S` fails or `etc/pacman.d/gnupg/` is missing/empty.
+
 ## Install
 
 ```sh
