@@ -7,6 +7,7 @@
 #   ./install.sh --skip-deps     skip the pacman install step
 #   ./install.sh --skip-clone    reuse an existing checkout at $SRC_DIR
 #   ./install.sh --skip-build    reuse an existing build at $SRC_DIR/build
+#   ./install.sh --skip-portable skip the portability (DLL-closure) step
 #   ./install.sh --only-portable just (re)run the portability step
 #   ./install.sh --branch emacs-31 --repo <url> --jobs 8 --prefix <dir>
 #
@@ -24,7 +25,7 @@ JOBS=${EMACS_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
 
 do_deps=1 do_clone=1 do_build=1 do_portable=1 list_only=0
 
-usage() { sed -n '4,11p' "$0"; }
+usage() { sed -n '4,12p' "$0"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,6 +33,7 @@ while [ $# -gt 0 ]; do
         --skip-deps)      do_deps=0 ;;
         --skip-clone)     do_clone=0 ;;
         --skip-build)     do_build=0 ;;
+        --skip-portable)  do_portable=0 ;;
         --only-portable)  do_deps=0; do_clone=0; do_build=0 ;;
         --branch)         EMACS_BRANCH=$2; shift ;;
         --repo)           EMACS_REPO=$2; shift ;;
@@ -155,9 +157,9 @@ if [ "$do_portable" -eq 1 ]; then
 
     while :; do
         missing=$(find "$PREFIX" \( -name '*.exe' -o -name '*.dll' \) -print0 \
-            | xargs -0 ldd 2>/dev/null \
+            | xargs -0 -n1 ldd 2>/dev/null \
             | awk '/mingw64/ { print $3 }' \
-            | sort -u)
+            | sort -u) || true
         new=0
         for dll in $missing; do
             base=$(basename "$dll")
