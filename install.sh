@@ -8,10 +8,20 @@
 #   ./install.sh --skip-clone    reuse an existing checkout at $SRC_DIR
 #   ./install.sh --skip-build    reuse an existing build at $SRC_DIR/build
 #   ./install.sh --skip-portable skip the portability (DLL-closure) step
+#   ./install.sh --skip-fixups   skip auto-applying known upstream fixes
 #   ./install.sh --only-portable just (re)run the portability step
 #   ./install.sh --branch emacs-31 --repo <url> --jobs 8 --prefix <dir>
 #
 # Must be run from an MSYS2 "mingw64.exe" shell.
+#
+# Known-fixes: emacs-30 (as of this writing) still lacks upstream commit
+# 7b9d3e90ce32e2e19f0b4725868f9a6f76346ae6 ("Fix MS-Windows build broken by
+# recent updates in MinGW64 headers", landed on master 2026-01-22), which is
+# needed against current mingw-w64-headers or the link fails with
+# "undefined reference to `__imp_sys_strerror'". The build step fetches
+# just that commit and applies its two-file diff (nt/inc/ms-w32.h,
+# src/w32.c) before configuring — a no-op once emacs-30 carries the fix
+# itself. Pass --skip-fixups to disable.
 
 set -euo pipefail
 
@@ -21,9 +31,10 @@ EMACS_REPO=${EMACS_REPO:-https://git.savannah.gnu.org/git/emacs.git}
 EMACS_BRANCH=${EMACS_BRANCH:-emacs-30}
 SRC_DIR=${EMACS_SRC_DIR:-"$here/build/emacs-src"}
 PREFIX=${EMACS_PREFIX:-"$here/dist/emacs-${EMACS_BRANCH}-win64"}
-JOBS=${EMACS_BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}
+JOBS=${EMACS_BUILD_JOBS:-$(n=$(nproc 2>/dev/null || echo 4); [ "$n" -gt 1 ] && echo $((n - 1)) || echo 1)}
 
-do_deps=1 do_clone=1 do_build=1 do_portable=1 list_only=0
+do_deps=1 do_clone=1 do_build=1 do_portable=1 do_fixups=1 list_only=0
+FIX_SYS_STRERROR=7b9d3e90ce32e2e19f0b4725868f9a6f76346ae6
 
 usage() { sed -n '4,12p' "$0"; }
 
@@ -34,6 +45,7 @@ while [ $# -gt 0 ]; do
         --skip-clone)     do_clone=0 ;;
         --skip-build)     do_build=0 ;;
         --skip-portable)  do_portable=0 ;;
+        --skip-fixups)    do_fixups=0 ;;
         --only-portable)  do_deps=0; do_clone=0; do_build=0 ;;
         --branch)         EMACS_BRANCH=$2; shift ;;
         --repo)           EMACS_REPO=$2; shift ;;
@@ -56,7 +68,7 @@ if [ "$list_only" -eq 1 ]; then
     echo "source dir   : $SRC_DIR"
     echo "install dir  : $PREFIX"
     echo "build jobs   : $JOBS"
-    echo "steps        : deps=$do_deps clone=$do_clone build=$do_build portable=$do_portable"
+    echo "steps        : deps=$do_deps clone=$do_clone build=$do_build portable=$do_portable fixups=$do_fixups"
     exit 0
 fi
 
@@ -109,9 +121,34 @@ else
     warn "skipping clone (--skip-clone)"
 fi
 
+# --------------------------------------------------- 2.5 known-upstream-fixes
+apply_known_fixes() {
+    if grep -q 'MinGW64 system headers include string.h too early' \
+        "$SRC_DIR/nt/inc/ms-w32.h" 2>/dev/null; then
+        info "sys_strerror/MinGW64-headers fix already present — skipping"
+        return 0
+    fi
+    info "fetching + applying known fix $FIX_SYS_STRERROR (sys_strerror vs. current mingw-w64-headers, not yet on $EMACS_BRANCH)"
+    if ! (cd "$SRC_DIR" && git fetch --depth 2 origin "$FIX_SYS_STRERROR") \
+        >/dev/null 2>&1; then
+        warn "could not fetch $FIX_SYS_STRERROR — skipping known-fix step (offline? shallow history?)"
+        return 0
+    fi
+    (cd "$SRC_DIR" \
+        && git show "$FIX_SYS_STRERROR" -- nt/inc/ms-w32.h src/w32.c > /tmp/emacs-sys-strerror.patch \
+        && git apply --check /tmp/emacs-sys-strerror.patch \
+        && git apply /tmp/emacs-sys-strerror.patch) \
+        || warn "known fix $FIX_SYS_STRERROR did not apply cleanly — build may fail with __imp_sys_strerror link errors (see https://lists.gnu.org/archive/html/emacs-devel/2026-01/msg00580.html)"
+}
+
 # -------------------------------------------------------------- 3. build
 if [ "$do_build" -eq 1 ]; then
     [ -d "$SRC_DIR" ] || die "$SRC_DIR does not exist — run without --skip-clone first"
+    if [ "$do_fixups" -eq 1 ]; then
+        apply_known_fixes
+    else
+        warn "skipping known-fixes step (--skip-fixups)"
+    fi
     info "running autogen.sh"
     (cd "$SRC_DIR" && ./autogen.sh)
 
