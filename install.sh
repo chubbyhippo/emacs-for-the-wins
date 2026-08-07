@@ -23,15 +23,17 @@
 # src/w32.c) before configuring — a no-op once emacs-30 carries the fix
 # itself. Pass --skip-fixups to disable.
 #
-# Separate, NOT auto-fixed (no upstream commit to cherry-pick yet): this
-# emacs-30 snapshot's treesit.c still resolves the deprecated ts_language_version
-# symbol at runtime, but MSYS2's mingw-w64-x86_64-libtree-sitter (>=0.25, current
-# is 0.26.x) dropped it for ts_language_abi_version — the DLL loads fine
-# standalone, but Emacs's silent Windows delayed-load leaves treesit-available-p
-# nil with no error surfaced. The portable step below warns if it detects this;
-# the fix is swapping in a 0.24.x libtree-sitter DLL (still exports the old
-# symbol), e.g. the package at
-# https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtree-sitter-0.24.7-2-any.pkg.tar.zst
+# Second known-fix, also auto-applied: this emacs-30 snapshot's treesit.c
+# still resolves the deprecated ts_language_version symbol at runtime, but
+# MSYS2's mingw-w64-x86_64-libtree-sitter (>=0.25, current is 0.26.x) dropped
+# it for ts_language_abi_version — the DLL loads fine standalone, but Emacs's
+# silent Windows delayed-load leaves treesit-available-p nil with no error
+# surfaced. The portable step below detects this (objdump -p | grep) and, if
+# so, downloads a 0.24.7 libtree-sitter build (still exports the old symbol)
+# and swaps it in, keeping the original filename so dynamic-library-alist's
+# lookup still matches. Needs network access; --skip-fixups disables this too.
+# Verified working (not just present) at the end: the script eval's
+# treesit-available-p in the built emacs.exe and fails loudly if it's nil.
 
 set -euo pipefail
 
@@ -45,6 +47,7 @@ JOBS=${EMACS_BUILD_JOBS:-$(n=$(nproc 2>/dev/null || echo 4); [ "$n" -gt 1 ] && e
 
 do_deps=1 do_clone=1 do_build=1 do_portable=1 do_fixups=1 list_only=0
 FIX_SYS_STRERROR=7b9d3e90ce32e2e19f0b4725868f9a6f76346ae6
+FIX_TREE_SITTER_PKG_URL=https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtree-sitter-0.24.7-2-any.pkg.tar.zst
 
 usage() { sed -n '4,12p' "$0"; }
 
@@ -151,6 +154,59 @@ apply_known_fixes() {
         || warn "known fix $FIX_SYS_STRERROR did not apply cleanly — build may fail with __imp_sys_strerror link errors (see https://lists.gnu.org/archive/html/emacs-devel/2026-01/msg00580.html)"
 }
 
+# fix_tree_sitter_symbol BIN_DIR: swap in a libtree-sitter build that still
+# exports ts_language_version if the one already copied into BIN_DIR doesn't
+# (MSYS2 dropped it starting around libtree-sitter 0.25 in favor of
+# ts_language_abi_version; this emacs-30 snapshot's treesit.c still wants the
+# old name). A missing symbol makes Emacs's Windows delayed-load fail
+# silently — treesit-available-p ends up nil with no error anywhere.
+fix_tree_sitter_symbol() {
+    bin_dir=$1
+    need_fix=0
+    for f in "$bin_dir"/libtree-sitter-*.dll; do
+        [ -f "$f" ] || continue
+        if command -v objdump >/dev/null 2>&1 \
+            && objdump -p "$f" 2>/dev/null | grep -q ts_language_version; then
+            continue
+        fi
+        need_fix=1
+    done
+    if [ "$need_fix" -eq 0 ]; then
+        info "libtree-sitter DLL already exports ts_language_version — skipping known-fix"
+        return 0
+    fi
+
+    info "MSYS2 libtree-sitter lacks ts_language_version (needed by this emacs-30 snapshot) — fetching a 0.24.7 build that still exports it"
+    ts_tmp=$(mktemp -d)
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$FIX_TREE_SITTER_PKG_URL" -o "$ts_tmp/pkg.tar.zst" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$FIX_TREE_SITTER_PKG_URL" -O "$ts_tmp/pkg.tar.zst" 2>/dev/null
+    fi
+    if [ ! -s "$ts_tmp/pkg.tar.zst" ]; then
+        warn "could not download $FIX_TREE_SITTER_PKG_URL (offline?) — leaving libtree-sitter*.dll as-is; treesit-available-p may be nil. Fetch that URL manually and swap the DLL in $bin_dir to fix."
+        rm -rf "$ts_tmp"
+        return 0
+    fi
+    if ! tar -xf "$ts_tmp/pkg.tar.zst" -C "$ts_tmp" 2>/dev/null; then
+        warn "could not extract $ts_tmp/pkg.tar.zst (tar without zstd support?) — leaving libtree-sitter*.dll as-is."
+        rm -rf "$ts_tmp"
+        return 0
+    fi
+    good_dll=$(find "$ts_tmp/mingw64/bin" -name 'libtree-sitter-*.dll' 2>/dev/null | head -n1)
+    if [ -z "$good_dll" ]; then
+        warn "downloaded package did not contain a libtree-sitter DLL — leaving as-is."
+        rm -rf "$ts_tmp"
+        return 0
+    fi
+    for f in "$bin_dir"/libtree-sitter-*.dll; do
+        [ -f "$f" ] || continue
+        cp "$good_dll" "$f"
+        info "replaced $(basename "$f") with the 0.24.7 build (exports ts_language_version)"
+    done
+    rm -rf "$ts_tmp"
+}
+
 # -------------------------------------------------------------- 3. build
 if [ "$do_build" -eq 1 ]; then
     [ -d "$SRC_DIR" ] || die "$SRC_DIR does not exist — run without --skip-clone first"
@@ -202,22 +258,12 @@ if [ "$do_portable" -eq 1 ]; then
         done
     done
 
-    # known-fix: this emacs-30 snapshot's treesit.c resolves the deprecated
-    # ts_language_version symbol, which current MSYS2 libtree-sitter builds
-    # (>=0.25) no longer export (renamed to ts_language_abi_version). Load
-    # then fails silently — treesit-available-p is nil with no error surfaced.
-    # Warn rather than block: if it's missing, treesit-available-p will
-    # report nil at runtime and the fix is a manual DLL swap, not a rebuild.
-    for f in "$bin_dir"/libtree-sitter-*.dll; do
-        [ -f "$f" ] || continue
-        if command -v objdump >/dev/null 2>&1 \
-            && ! objdump -p "$f" 2>/dev/null | grep -q ts_language_version; then
-            warn "$f lacks ts_language_version (MSYS2 tree-sitter >=0.25) —" \
-                 "treesit-available-p will be nil at runtime. Swap it for a" \
-                 "libtree-sitter 0.24.x build (still exports the symbol), e.g." \
-                 "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtree-sitter-0.24.7-2-any.pkg.tar.zst"
-        fi
-    done
+    # known-fix: see fix_tree_sitter_symbol above.
+    if [ "$do_fixups" -eq 1 ]; then
+        fix_tree_sitter_symbol "$bin_dir"
+    else
+        warn "skipping tree-sitter-symbol known-fix (--skip-fixups)"
+    fi
 
     while :; do
         missing=$(find "$PREFIX" \( -name '*.exe' -o -name '*.dll' \) -print0 \
@@ -237,7 +283,25 @@ else
     warn "skipping portability step (--skip-portable / prior failure)"
 fi
 
+# ---------------------------------------------------- 5. verify
+if [ -x "$PREFIX/bin/emacs.exe" ]; then
+    info "verifying native-comp and tree-sitter"
+    verify_out=$("$PREFIX/bin/emacs.exe" --batch --eval \
+        '(princ (format "native-comp=%s treesit=%s" (native-comp-available-p) (treesit-available-p)))' \
+        2>/dev/null) || verify_out='<eval failed>'
+    echo "  $verify_out"
+    case "$verify_out" in
+        *treesit=t*) ;;
+        *) warn "treesit-available-p is nil — java-ts-mode and friends won't work. Check $PREFIX/bin/libtree-sitter-*.dll exports ts_language_version (objdump -p), or re-run with --only-portable to retry the known-fix." ;;
+    esac
+    case "$verify_out" in
+        *native-comp=t*) ;;
+        *) warn "native-comp-available-p is nil — check the build log for libgccjit errors." ;;
+    esac
+else
+    warn "skipping verification — $PREFIX/bin/emacs.exe not found"
+fi
+
 info "done: $PREFIX"
-echo "verify native-comp:  \"$PREFIX/bin/emacs.exe\" --batch --eval '(princ (native-comp-available-p))'"
 echo "run it (from any shell, MSYS2 or plain cmd/PowerShell): \"$PREFIX/bin/runemacs.exe\""
 echo "add \"$PREFIX/bin\" to PATH to use it as your default emacs"

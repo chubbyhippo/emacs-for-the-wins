@@ -29,7 +29,9 @@ Symptom if skipped: `pacman -S` fails or `etc/pacman.d/gnupg/` is missing/empty.
 | `--skip-deps` | skip `pacman` package install |
 | `--skip-clone` | reuse an existing checkout at `$SRC_DIR` |
 | `--skip-build` | reuse an existing build at `$SRC_DIR/build` |
-| `--only-portable` | just (re)run the portability step |
+| `--skip-portable` | skip the portability (DLL-closure) step |
+| `--skip-fixups` | skip auto-applying the known upstream fixes (see below) |
+| `--only-portable` | just (re)run the portability + verify steps |
 | `--branch <name>` | git branch to build (default `emacs-30`) |
 | `--repo <url>` | git remote to clone (default the Savannah mirror above) |
 | `--src-dir <path>` | checkout location (default `build/emacs-src`) |
@@ -44,16 +46,26 @@ Env var overrides: `EMACS_REPO`, `EMACS_BRANCH`, `EMACS_SRC_DIR`, `EMACS_PREFIX`
 |---|---|
 | 1. Dependencies | `pacman -S` the `mingw-w64-x86_64-*` toolchain + libgccjit + image/xml/gnutls/tree-sitter libs, plus `git`/`autoconf`/`automake`/`texinfo` |
 | 2. Clone | `git clone --branch <branch> --depth 1 <repo>` |
-| 3. Build | `autogen.sh` → `configure --with-native-compilation=aot --with-tree-sitter --with-gnutls --with-xpm` → `make bootstrap` → `make install` |
-| 4. Portable | copies `as.exe`/`ld.exe`/CRT objects/static archives into `lib/gcc`, then closes the DLL dependency graph (`ldd`-driven, iterative) into `bin/` |
+| 3. Build | `autogen.sh` → `configure --with-native-compilation=aot --with-tree-sitter --with-gnutls --with-xpm` → `make bootstrap` → `make install` (a known-fix cherry-picks an unreleased upstream commit first if `nt/inc/ms-w32.h` needs it — see Known issues) |
+| 4. Portable | copies `as.exe`/`ld.exe`/CRT objects/static archives into `lib/gcc`, then closes the DLL dependency graph (`ldd`-driven, iterative) into `bin/`; also auto-swaps in a working `libtree-sitter` build if the one `pacman` installed is missing a symbol this Emacs snapshot needs (see Known issues) |
+| 5. Verify | evals `native-comp-available-p` and `treesit-available-p` in the built `emacs.exe`, warning (not failing the whole run) if either is nil |
 
 ## Verify
 
+`install.sh` runs this automatically at the end and prints the result; to check by hand:
+
 ```sh
-"$PREFIX/bin/emacs.exe" --batch --eval '(princ (native-comp-available-p))'
+"$PREFIX/bin/emacs.exe" --batch --eval '(princ (format "native-comp=%s treesit=%s" (native-comp-available-p) (treesit-available-p)))'
 ```
 
-Should print `t`.
+Both should print `t`.
+
+## Known issues
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `treesit-available-p` is `nil` despite `--with-tree-sitter` | current MSYS2 `mingw-w64-x86_64-libtree-sitter` (≥0.25) dropped the `ts_language_version` symbol this Emacs snapshot's `treesit.c` still resolves; Windows' delayed-load fails silently, with no error surfaced anywhere in Lisp | auto-fixed by `install.sh`'s portable step (downloads a 0.24.7 build that still exports the symbol and swaps it in); re-run with `--only-portable` to retry, or pass `--skip-fixups` to disable and fix manually |
+| link fails with `undefined reference to '__imp_sys_strerror'` | `emacs-30` predates an upstream MinGW64-headers fix | auto-fixed by the build step (cherry-picks the two-file diff); `--skip-fixups` disables |
 
 ## Run
 
