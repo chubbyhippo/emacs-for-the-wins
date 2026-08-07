@@ -22,6 +22,16 @@
 # just that commit and applies its two-file diff (nt/inc/ms-w32.h,
 # src/w32.c) before configuring — a no-op once emacs-30 carries the fix
 # itself. Pass --skip-fixups to disable.
+#
+# Separate, NOT auto-fixed (no upstream commit to cherry-pick yet): this
+# emacs-30 snapshot's treesit.c still resolves the deprecated ts_language_version
+# symbol at runtime, but MSYS2's mingw-w64-x86_64-libtree-sitter (>=0.25, current
+# is 0.26.x) dropped it for ts_language_abi_version — the DLL loads fine
+# standalone, but Emacs's silent Windows delayed-load leaves treesit-available-p
+# nil with no error surfaced. The portable step below warns if it detects this;
+# the fix is swapping in a 0.24.x libtree-sitter DLL (still exports the old
+# symbol), e.g. the package at
+# https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtree-sitter-0.24.7-2-any.pkg.tar.zst
 
 set -euo pipefail
 
@@ -190,6 +200,23 @@ if [ "$do_portable" -eq 1 ]; then
         for f in /mingw64/bin/"$lib"-*.dll; do
             [ -f "$f" ] && cp -n "$f" "$bin_dir/"
         done
+    done
+
+    # known-fix: this emacs-30 snapshot's treesit.c resolves the deprecated
+    # ts_language_version symbol, which current MSYS2 libtree-sitter builds
+    # (>=0.25) no longer export (renamed to ts_language_abi_version). Load
+    # then fails silently — treesit-available-p is nil with no error surfaced.
+    # Warn rather than block: if it's missing, treesit-available-p will
+    # report nil at runtime and the fix is a manual DLL swap, not a rebuild.
+    for f in "$bin_dir"/libtree-sitter-*.dll; do
+        [ -f "$f" ] || continue
+        if command -v objdump >/dev/null 2>&1 \
+            && ! objdump -p "$f" 2>/dev/null | grep -q ts_language_version; then
+            warn "$f lacks ts_language_version (MSYS2 tree-sitter >=0.25) —" \
+                 "treesit-available-p will be nil at runtime. Swap it for a" \
+                 "libtree-sitter 0.24.x build (still exports the symbol), e.g." \
+                 "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtree-sitter-0.24.7-2-any.pkg.tar.zst"
+        fi
     done
 
     while :; do
