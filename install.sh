@@ -252,8 +252,8 @@ if [ "$do_portable" -eq 1 ]; then
     cp /mingw64/bin/{as,ld}.exe "$gcc_dir/"
 
     bin_dir="$PREFIX/bin"
-    for lib in libtree-sitter libgccjit; do
-        for f in /mingw64/bin/"$lib"-*.dll; do
+    for lib in libtree-sitter libgccjit libgnutls libxml2 libsqlite3 librsvg libwebp libtiff libpng libjpeg libgif liblcms2 libxpm; do
+        for f in /mingw64/bin/"$lib"*.dll; do
             [ -f "$f" ] && cp -n "$f" "$bin_dir/"
         done
     done
@@ -285,11 +285,15 @@ fi
 
 # ---------------------------------------------------- 5. verify
 if [ -x "$PREFIX/bin/emacs.exe" ]; then
-    info "verifying native-comp and tree-sitter"
+    info "verifying native-comp, tree-sitter, and gnutls"
     verify_out=$("$PREFIX/bin/emacs.exe" --batch --eval \
-        '(princ (format "native-comp=%s treesit=%s" (native-comp-available-p) (treesit-available-p)))' \
+        '(princ (format "native-comp=%s treesit=%s gnutls=%s" (native-comp-available-p) (treesit-available-p) (if (gnutls-available-p) t nil)))' \
         2>/dev/null) || verify_out='<eval failed>'
     echo "  $verify_out"
+    case "$verify_out" in
+        *gnutls=t*) ;;
+        *) warn "gnutls-available-p is nil — HTTPS / package archives (ELPA) will not work. Check $PREFIX/bin/libgnutls-*.dll." ;;
+    esac
     case "$verify_out" in
         *treesit=t*) ;;
         *) warn "treesit-available-p is nil — java-ts-mode and friends won't work. Check $PREFIX/bin/libtree-sitter-*.dll exports ts_language_version (objdump -p), or re-run with --only-portable to retry the known-fix." ;;
