@@ -198,7 +198,12 @@ if [ "$do_build" -eq 1 ]; then
     info "building (make bootstrap -j$JOBS)"
     (cd "$build_dir" && make bootstrap -j"$JOBS")
     info "installing -> $PREFIX"
-    (cd "$build_dir" && make install)
+    # Emacs top-level install rule chowns every installed file using
+    # LOGNAME/USERNAME/USER, with a numeric id fallback. MSYS2 sets USERNAME
+    # to the Windows/AD account name, which chown often cannot resolve,
+    # printing a harmless invalid-user warning per file. Unset those vars so
+    # it falls back to the always-resolvable numeric ids instead.
+    (cd "$build_dir" && env -u LOGNAME -u USERNAME -u USER make install)
 else
     warn "skipping build (--skip-build)"
 fi
